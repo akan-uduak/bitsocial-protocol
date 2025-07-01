@@ -105,3 +105,105 @@
     tipped-at: uint
   }
 )
+
+;; Social graph connections (follower/following relationships)
+(define-map social-connections
+  { follower-id: uint, following-id: uint }
+  { connected-at: uint }
+)
+
+;; Tokenized communities with governance capabilities
+(define-map communities
+  { community-id: uint }
+  {
+    name: (string-ascii 64),
+    description: (string-utf8 256),
+    creator-id: uint,
+    token-symbol: (string-ascii 8),
+    total-supply: uint,
+    member-count: uint,
+    created-at: uint,
+    governance-threshold: uint
+  }
+)
+
+;; Community membership with token holdings and permissions
+(define-map community-members
+  { community-id: uint, member-id: uint }
+  {
+    token-balance: uint,
+    joined-at: uint,
+    is-moderator: bool
+  }
+)
+
+;; Time-based engagement tracking for reputation calculation
+(define-map user-engagement
+  { profile-id: uint, period: uint }             ;; period = block-height / 2016 (weekly epochs)
+  {
+    tips-received: uint,
+    tips-sent: uint,
+    content-posted: uint,
+    engagement-score: uint
+  }
+)
+
+;; PRIVATE HELPER FUNCTIONS
+
+(define-private (is-valid-handle (handle (string-ascii 32)))
+  (and 
+    (> (len handle) u0)
+    (<= (len handle) MAX_HANDLE_LENGTH)
+    (is-none (map-get? handle-to-profile handle))
+  )
+)
+
+(define-private (is-valid-url (url (string-ascii 256)))
+  (and
+    (> (len url) u0)
+    (<= (len url) MAX_URL_LENGTH)
+    ;; Basic URL validation - must start with http:// or https://
+    (or
+      (is-eq (unwrap-panic (slice? url u0 u7)) "http://")
+      (is-eq (unwrap-panic (slice? url u0 u8)) "https://")
+    )
+  )
+)
+
+(define-private (is-valid-optional-url (url (optional (string-ascii 256))))
+  (match url
+    some-url (is-valid-url some-url)
+    true ;; None is always valid
+  )
+)
+
+(define-private (is-valid-message (message (optional (string-utf8 256))))
+  (match message
+    some-msg (<= (len some-msg) MAX_MESSAGE_LENGTH)
+    true ;; None is always valid
+  )
+)
+
+(define-private (is-valid-content-type (content-type (string-ascii 5)))
+  (let ((valid-types (list "text" "image" "video" "audio" "link")))
+    (is-some (index-of valid-types content-type))
+  )
+)
+
+(define-private (calculate-protocol-fee (amount uint))
+  (/ (* amount PROTOCOL_FEE_BPS) u10000)
+)
+
+(define-private (get-current-period)
+  (/ stacks-block-height u2016) ;; Weekly engagement periods
+)
+
+(define-private (update-reputation (profile-id uint) (points uint))
+  (let ((profile (unwrap! (map-get? user-profiles { profile-id: profile-id }) false)))
+    (map-set user-profiles
+      { profile-id: profile-id }
+      (merge profile { reputation-score: (+ (get reputation-score profile) points) })
+    )
+    true
+  )
+)
