@@ -502,3 +502,136 @@
     (ok community-id)
   )
 )
+
+;; Join community ecosystem
+(define-public (join-community (community-id uint))
+  (let
+    (
+      (member-id (unwrap! (map-get? principal-to-profile tx-sender) ERR_PROFILE_NOT_FOUND))
+      (community (unwrap! (map-get? communities { community-id: community-id }) ERR_NOT_FOUND))
+      (validated-community-id (if (is-some (map-get? communities { community-id: community-id })) community-id u0))
+    )
+    (asserts! (> validated-community-id u0) ERR_NOT_FOUND)
+    (asserts! (is-none (map-get? community-members { community-id: validated-community-id, member-id: member-id })) ERR_ALREADY_EXISTS)
+    
+    ;; Add new community member
+    (map-set community-members
+      { community-id: validated-community-id, member-id: member-id }
+      {
+        token-balance: u0,
+        joined-at: stacks-block-height,
+        is-moderator: false
+      }
+    )
+    
+    ;; Update community metrics
+    (map-set communities
+      { community-id: validated-community-id }
+      (merge community { member-count: (+ (get member-count community) u1) })
+    )
+    
+    (ok true)
+  )
+)
+
+;; READ-ONLY FUNCTIONS - DATA ACCESS LAYER
+
+(define-read-only (get-profile-by-id (profile-id uint))
+  (map-get? user-profiles { profile-id: profile-id })
+)
+
+(define-read-only (get-profile-by-handle (handle (string-ascii 32)))
+  (match (map-get? handle-to-profile handle)
+    some-id (map-get? user-profiles { profile-id: some-id })
+    none
+  )
+)
+
+(define-read-only (get-profile-by-principal (user principal))
+  (match (map-get? principal-to-profile user)
+    some-id (map-get? user-profiles { profile-id: some-id })
+    none
+  )
+)
+
+(define-read-only (get-content (content-id uint))
+  (map-get? content-posts { content-id: content-id })
+)
+
+(define-read-only (get-tip (content-id uint) (tipper principal))
+  (map-get? content-tips { content-id: content-id, tipper: tipper })
+)
+
+(define-read-only (is-following (follower-handle (string-ascii 32)) (following-handle (string-ascii 32)))
+  (match (map-get? handle-to-profile follower-handle)
+    follower-id (match (map-get? handle-to-profile following-handle)
+      following-id (is-some (map-get? social-connections { follower-id: follower-id, following-id: following-id }))
+      false
+    )
+    false
+  )
+)
+
+(define-read-only (get-community (community-id uint))
+  (map-get? communities { community-id: community-id })
+)
+
+(define-read-only (get-community-member (community-id uint) (member-id uint))
+  (map-get? community-members { community-id: community-id, member-id: member-id })
+)
+
+(define-read-only (get-user-engagement (profile-id uint) (period uint))
+  (map-get? user-engagement { profile-id: profile-id, period: period })
+)
+
+(define-read-only (get-protocol-stats)
+  {
+    total-profiles: (- (var-get next-profile-id) u1),
+    total-content: (- (var-get next-content-id) u1),
+    total-communities: (- (var-get next-community-id) u1),
+    protocol-fee-bps: PROTOCOL_FEE_BPS,
+    protocol-paused: (var-get protocol-paused)
+  }
+)
+
+;; ADMIN FUNCTIONS - PROTOCOL GOVERNANCE
+
+(define-public (set-protocol-fee-recipient (new-recipient principal))
+  (let ((validated-recipient (if (is-standard new-recipient) new-recipient CONTRACT_OWNER)))
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (var-set protocol-fee-recipient validated-recipient)
+    (ok true)
+  )
+)
+
+(define-public (pause-protocol)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (var-set protocol-paused true)
+    (ok true)
+  )
+)
+
+(define-public (unpause-protocol)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (var-set protocol-paused false)
+    (ok true)
+  )
+)
+
+(define-public (verify-profile (profile-id uint))
+  (let 
+    (
+      (profile (unwrap! (map-get? user-profiles { profile-id: profile-id }) ERR_PROFILE_NOT_FOUND))
+      (validated-profile-id (if (is-some (map-get? user-profiles { profile-id: profile-id })) profile-id u0))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (> validated-profile-id u0) ERR_PROFILE_NOT_FOUND)
+    (map-set user-profiles
+      { profile-id: validated-profile-id }
+      (merge profile { verified: true })
+    )
+    (ok true)
+  )
+)
