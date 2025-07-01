@@ -386,3 +386,119 @@
     (ok content-id)
   )
 )
+
+;; Direct creator monetization through STX microtips
+(define-public (tip-content (content-id uint) (amount uint) (message (optional (string-utf8 256))))
+  (let
+    (
+      (content (unwrap! (map-get? content-posts { content-id: content-id }) ERR_CONTENT_NOT_FOUND))
+      (tipper-id (unwrap! (map-get? principal-to-profile tx-sender) ERR_PROFILE_NOT_FOUND))
+      (author-id (get author-id content))
+      (author-profile (unwrap! (map-get? user-profiles { profile-id: author-id }) ERR_PROFILE_NOT_FOUND))
+      (tipper-profile (unwrap! (map-get? user-profiles { profile-id: tipper-id }) ERR_PROFILE_NOT_FOUND))
+      (protocol-fee (calculate-protocol-fee amount))
+      (author-amount (- amount protocol-fee))
+      (validated-message (if (is-valid-message message) message none))
+      (validated-content-id (if (is-some (map-get? content-posts { content-id: content-id })) content-id u0))
+    )
+    (asserts! (not (var-get protocol-paused)) ERR_UNAUTHORIZED)
+    (asserts! (>= amount MIN_TIP_AMOUNT) ERR_INVALID_AMOUNT)
+    (asserts! (not (is-eq tipper-id author-id)) ERR_SELF_TIP)
+    (asserts! (> validated-content-id u0) ERR_CONTENT_NOT_FOUND)
+    (asserts! (is-none (map-get? content-tips { content-id: validated-content-id, tipper: tx-sender })) ERR_ALREADY_TIPPED)
+    (asserts! (is-valid-message message) ERR_INVALID_MESSAGE)
+    
+    ;; Execute atomic STX transfers
+    (try! (stx-transfer? author-amount tx-sender (get owner author-profile)))
+    (try! (stx-transfer? protocol-fee tx-sender (var-get protocol-fee-recipient)))
+    
+    ;; Record tip for transparency
+    (map-set content-tips
+      { content-id: validated-content-id, tipper: tx-sender }
+      {
+        amount: amount,
+        message: validated-message,
+        tipped-at: stacks-block-height
+      }
+    )
+    
+    ;; Update content engagement metrics
+    (map-set content-posts
+      { content-id: validated-content-id }
+      (merge content 
+        { 
+          tip-count: (+ (get tip-count content) u1),
+          total-tips: (+ (get total-tips content) amount),
+          engagement-score: (+ (get engagement-score content) u1)
+        }
+      )
+    )
+    
+    ;; Update user monetization tracking
+    (map-set user-profiles
+      { profile-id: author-id }
+      (merge author-profile { total-tips-received: (+ (get total-tips-received author-profile) author-amount) })
+    )
+    
+    (map-set user-profiles
+      { profile-id: tipper-id }
+      (merge tipper-profile { total-tips-sent: (+ (get total-tips-sent tipper-profile) amount) })
+    )
+    
+    ;; Update engagement tracking and reputation
+    (update-engagement author-id amount u0 u0)
+    (update-engagement tipper-id u0 amount u0)
+    (update-reputation author-id (/ amount u1000)) ;; Reputation boost from tips received
+    
+    (ok true)
+  )
+)
+
+;; PUBLIC FUNCTIONS - COMMUNITY GOVERNANCE
+
+;; Launch tokenized community with governance capabilities
+(define-public (create-community (name (string-ascii 64)) (description (string-utf8 256)) (token-symbol (string-ascii 8)) (initial-supply uint))
+  (let
+    (
+      (community-id (var-get next-community-id))
+      (creator-id (unwrap! (map-get? principal-to-profile tx-sender) ERR_PROFILE_NOT_FOUND))
+    )
+    (asserts! (not (var-get protocol-paused)) ERR_UNAUTHORIZED)
+    (asserts! (> initial-supply u0) ERR_INVALID_PARAMS)
+    (asserts! (> (len name) u0) ERR_INVALID_PARAMS)
+    (asserts! (<= (len name) u64) ERR_INVALID_PARAMS)
+    (asserts! (<= (len description) u256) ERR_INVALID_PARAMS)
+    (asserts! (> (len token-symbol) u0) ERR_INVALID_PARAMS)
+    (asserts! (<= (len token-symbol) u8) ERR_INVALID_PARAMS)
+    
+    ;; Initialize community governance structure
+    (map-set communities
+      { community-id: community-id }
+      {
+        name: name,
+        description: description,
+        creator-id: creator-id,
+        token-symbol: token-symbol,
+        total-supply: initial-supply,
+        member-count: u1,
+        created-at: stacks-block-height,
+        governance-threshold: (/ initial-supply u2) ;; 50% voting threshold
+      }
+    )
+    
+    ;; Grant founder full governance tokens
+    (map-set community-members
+      { community-id: community-id, member-id: creator-id }
+      {
+        token-balance: initial-supply,
+        joined-at: stacks-block-height,
+        is-moderator: true
+      }
+    )
+    
+    ;; Increment community counter
+    (var-set next-community-id (+ community-id u1))
+    
+    (ok community-id)
+  )
+)
